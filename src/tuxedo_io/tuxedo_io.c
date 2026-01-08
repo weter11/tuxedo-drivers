@@ -47,7 +47,7 @@ MODULE_ALIAS("wmi:" UNIWILL_WMI_MGMT_GUID_BC);
 
 #define NB01_FAN_SPEED_MAX 0xff
 #define NB02_FAN_SPEED_MAX 0xc8
-// #define FAN_ON_MIN_SPEED_PERCENT 25
+#define FAN_ON_MIN_SPEED_PERCENT 0
 
 // Initialized in module init, global for ioctl interface
 static u32 id_check_clevo;
@@ -336,10 +336,10 @@ static long clevo_ioctl_interface(struct file *file, unsigned int cmd, unsigned 
 			// Don't allow vallues between fan-off and minimum fan-on-speed
 			u8 fanspeeds[3] = { argument & 0xff, argument >> 8 & 0xff, argument >> 16 & 0xff };
 			for (i = 0; i < 3; ++i) {
-				// if (fanspeeds[i] < FAN_ON_MIN_SPEED_PERCENT * NB01_FAN_SPEED_MAX / 2 / 100)
-				// 	fanspeeds[i] = 0;
-				// else if (fanspeeds[i] < FAN_ON_MIN_SPEED_PERCENT * NB01_FAN_SPEED_MAX / 100)
-				// 	fanspeeds[i] = FAN_ON_MIN_SPEED_PERCENT * NB01_FAN_SPEED_MAX / 100;
+				if (fanspeeds[i] < FAN_ON_MIN_SPEED_PERCENT * NB01_FAN_SPEED_MAX / 2 / 100)
+					fanspeeds[i] = 0;
+				else if (fanspeeds[i] < FAN_ON_MIN_SPEED_PERCENT * NB01_FAN_SPEED_MAX / 100)
+					fanspeeds[i] = FAN_ON_MIN_SPEED_PERCENT * NB01_FAN_SPEED_MAX / 100;
 			}
 			argument = fanspeeds[0];
 			argument |= fanspeeds[1] << 8;
@@ -526,10 +526,10 @@ static u32 uw_set_fan(u32 fan_index, u8 fan_speed)
 				return -EINVAL;
 
 			// Don't allow vallues between fan-off and minimum fan-on-speed
-			// if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 2 / 100)
-			// 	fan_speed = 0;
-			// else if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100)
-			// 	fan_speed = FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100;
+			if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 2 / 100)
+				fan_speed = 0;
+			else if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100)
+				fan_speed = FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100;
 
 			if (fan_speed == 0 &&
 			!dmi_match(DMI_BOARD_NAME, "GXxMRXx")) {
