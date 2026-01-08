@@ -47,7 +47,7 @@ MODULE_ALIAS("wmi:" UNIWILL_WMI_MGMT_GUID_BC);
 
 #define NB01_FAN_SPEED_MAX 0xff
 #define NB02_FAN_SPEED_MAX 0xc8
-#define FAN_ON_MIN_SPEED_PERCENT 25
+#define FAN_ON_MIN_SPEED_PERCENT 0
 
 // Initialized in module init, global for ioctl interface
 static u32 id_check_clevo;

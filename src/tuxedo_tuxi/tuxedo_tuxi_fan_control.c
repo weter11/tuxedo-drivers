@@ -29,7 +29,7 @@
 #include "tuxi_acpi.h"
 
 #define FAN_SET_DUTY_MAX 255
-#define FAN_ON_MIN_SPEED_PERCENT 25
+#define FAN_ON_MIN_SPEED_PERCENT 0
 
 struct driver_data_t {
 	struct platform_device *pdev;
