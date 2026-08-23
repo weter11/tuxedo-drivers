@@ -32,30 +32,40 @@
 #include <linux/led-class-multicolor.h>
 #include <linux/string.h>
 #include <linux/version.h>
+#include <linux/efi.h>
+#include <linux/slab.h>
 #include <linux/i8042.h>
 #include <linux/serio.h>
+#include <acpi/battery.h>
 #include "uniwill_interfaces.h"
 #include "uniwill_leds.h"
 
-#define UNIWILL_OSD_RADIOON			0x01A
-#define UNIWILL_OSD_RADIOOFF			0x01B
-#define UNIWILL_OSD_KB_LED_LEVEL0		0x03B
-#define UNIWILL_OSD_KB_LED_LEVEL1		0x03C
-#define UNIWILL_OSD_KB_LED_LEVEL2		0x03D
-#define UNIWILL_OSD_KB_LED_LEVEL3		0x03E
-#define UNIWILL_OSD_KB_LED_LEVEL4		0x03F
-#define UNIWILL_OSD_DC_ADAPTER_CHANGE		0x0AB
-#define UNIWILL_OSD_MODE_CHANGE_KEY_EVENT	0x0B0
+#define FAN_ON_MIN_SPEED_PERCENT 25
 
-#define UNIWILL_KEY_RFKILL			0x0A4
-#define UNIWILL_KEY_KBDILLUMDOWN		0x0B1
-#define UNIWILL_KEY_KBDILLUMUP			0x0B2
-#define UNIWILL_KEY_FN_LOCK			0x0B8
-#define UNIWILL_KEY_KBDILLUMTOGGLE		0x0B9
+#define UNIWILL_OSD_RADIOON				0x01A
+#define UNIWILL_OSD_RADIOOFF				0x01B
+#define UNIWILL_OSD_KB_LED_LEVEL0			0x03B
+#define UNIWILL_OSD_KB_LED_LEVEL1			0x03C
+#define UNIWILL_OSD_KB_LED_LEVEL2			0x03D
+#define UNIWILL_OSD_KB_LED_LEVEL3			0x03E
+#define UNIWILL_OSD_KB_LED_LEVEL4			0x03F
+#define UNIWILL_OSD_DC_ADAPTER_CHANGE			0x0AB
+#define UNIWILL_OSD_MODE_CHANGE_KEY_EVENT		0x0B0
 
-#define UNIWILL_OSD_TOUCHPADWORKAROUND		0xFFF
+#define UNIWILL_KEY_RFKILL				0x0A4
+#define UNIWILL_KEY_KBDILLUMDOWN			0x0B1
+#define UNIWILL_KEY_KBDILLUMUP				0x0B2
+#define UNIWILL_KEY_FN_LOCK				0x0B8
+#define UNIWILL_KEY_KBDILLUMTOGGLE			0x0B9
 
-#define UNIWILL_FN_LOCK_MASK			0x10
+#define UNIWILL_OSD_TOUCHPADWORKAROUND			0xFFF
+
+#define UNIWILL_FN_LOCK_MASK				0x10
+
+#define UW_MEMORY_OVERCLOCKING_SWITCH			0x33
+#define UW_MEMORY_OVERCLOCKING_SUPPORT			0x60
+#define UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SUPPORT	0x6E
+#define UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SWITCH	0x6f
 
 static void uw_charging_priority_write_state(void);
 static void uw_charging_profile_write_state(void);
@@ -130,6 +140,19 @@ int uniwill_read_ec_ram_with_retry(u16 address, u8 *data, int retries)
 	return status;
 }
 EXPORT_SYMBOL(uniwill_read_ec_ram_with_retry);
+
+static int uniwill_read_ec_ram_u16(u16 hibyte_address, u16 lobyte_address, u16 *data) {
+	int result;
+	u8 hi, lo;
+	result = uniwill_read_ec_ram(hibyte_address, &hi);
+	if (result)
+		return result;
+	result = uniwill_read_ec_ram(lobyte_address, &lo);
+	if (result)
+		return result;
+	*data = (hi << 8) | lo;
+	return result;
+}
 
 int uniwill_write_ec_ram(u16 address, u8 data)
 {
@@ -286,12 +309,13 @@ void uniwill_event_callb(u32 code)
 			input_sync(uniwill_keyboard_driver.input_device);
 			break;
 		case UNIWILL_OSD_DC_ADAPTER_CHANGE:
-			// Refresh keyboard state and charging prio on cable switch event and make sure that the custom
+			// Refresh keyboard state and charging settings on cable switch event and make sure that the custom
 			// profile mode is still applied in case it's needed.
 			uniwill_set_custom_profile_mode(false);
 			uniwill_leds_restore_state_extern();
 			msleep(50);
 			uw_charging_priority_write_state();
+			uw_charging_profile_write_state();
 			break;
 		case UNIWILL_KEY_KBDILLUMTOGGLE:
 		case UNIWILL_OSD_KB_LED_LEVEL0:
@@ -578,12 +602,12 @@ static int uw_has_charging_priority(bool *status)
 	u8 data;
 	int result;
 
-	/* 
+	/*
 	 * The ODM dropped this feature for certain reasons by just disabling the feature within their Control Center.
 	 * Therefore every device using the control center until version 5.9.49.16 at least theoretically supports the
 	 * feature. However, due to the support identification bit, being listed among the following devices does not
 	 * automatically mean that this device supports the feature.
-	 * After 5.9.50.3 devices may still have the support identification bit set but don't officially support the 
+	 * After 5.9.50.3 devices may still have the support identification bit set but don't officially support the
 	 * feature anymore.
 	*/
 	bool device_before_feature_drop = false
@@ -593,22 +617,22 @@ static int uw_has_charging_priority(bool *status)
 		|| dmi_match(DMI_BOARD_NAME, "PHxARX1_PHxAQF1") // IBP Gen7
 		|| dmi_match(DMI_BOARD_NAME, "PH6AG01_PH6AQ71_PH6AQI1")
 		|| dmi_match(DMI_BOARD_NAME, "PHxTxX1") // IBP Gen6
-		|| dmi_match(DMI_BOARD_NAME, "GMxXGxx") // Polaris Gen5 
-		|| dmi_match(DMI_BOARD_NAME, "GMxNGxx") // Polaris Gen3 
-		|| dmi_match(DMI_BOARD_NAME, "GMxTGxx") // Stellaris/Polaris Gen3 
+		|| dmi_match(DMI_BOARD_NAME, "GMxXGxx") // Polaris Gen5
+		|| dmi_match(DMI_BOARD_NAME, "GMxNGxx") // Polaris Gen3
+		|| dmi_match(DMI_BOARD_NAME, "GMxTGxx") // Stellaris/Polaris Gen3
 		|| dmi_match(DMI_BOARD_NAME, "GMxZGxx") // Stellaris Gen3
-		|| dmi_match(DMI_BOARD_NAME, "GMxMGxx") // Polaris Gen2 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501I1650TI") // Polaris Gen1 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501A1650TI") 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701A1650TI") 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701I1650TI") 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501I2060") 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501A2060") 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701I2060") 
-		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701A2060") 
+		|| dmi_match(DMI_BOARD_NAME, "GMxMGxx") // Polaris Gen2
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501I1650TI") // Polaris Gen1
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501A1650TI")
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701A1650TI")
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701I1650TI")
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501I2060")
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1501A2060")
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701I2060")
+		|| dmi_match(DMI_BOARD_NAME, "POLARIS1701A2060")
 		|| dmi_match(DMI_BOARD_NAME, "PF5LUXG") // Pulse Gen2
 		|| dmi_match(DMI_BOARD_NAME, "PULSE1401") // Pulse Gen1
-		|| dmi_match(DMI_BOARD_NAME, "PULSE1501") 
+		|| dmi_match(DMI_BOARD_NAME, "PULSE1501")
 		;
 
 	if (!device_before_feature_drop) {
@@ -650,7 +674,7 @@ static void uw_charging_priority_init(struct platform_device *dev)
 }
 
 static bool uw_charging_profile_loaded = false;
-static bool uw_charging_profile_last_written_value;
+static u8 uw_charging_profile_last_written_value;
 
 static ssize_t uw_charging_profiles_available_show(struct device *child,
 						   struct device_attribute *attr,
@@ -688,16 +712,18 @@ static struct attribute_group uw_charging_profile_attr_group = {
  */
 static int uw_set_charging_profile(u8 charging_profile)
 {
-	u8 previous_data, next_data;
+	u8 previous_data, next_data, shifted_profile;
 	int result;
 
-	charging_profile = (charging_profile & 0x03) << 4;
+	/* Store unshifted value (0-2) for later restoration */
+	charging_profile = charging_profile & 0x03;
+	shifted_profile = charging_profile << 4;
 
 	result = uniwill_read_ec_ram(0x07a6, &previous_data);
 	if (result != 0)
 		return result;
 
-	next_data = (previous_data & ~(0x03 << 4)) | charging_profile;
+	next_data = (previous_data & ~(0x03 << 4)) | shifted_profile;
 	result = uniwill_write_ec_ram(0x07a6, next_data);
 
 	if (result == 0)
@@ -743,7 +769,7 @@ static int uw_has_charging_profile(bool *status)
 	return 0;
 }
 
-static void __attribute__ ((unused)) uw_charging_profile_write_state(void)
+static void uw_charging_profile_write_state(void)
 {
 	if (uw_charging_profile_loaded)
 		uw_set_charging_profile(uw_charging_profile_last_written_value);
@@ -1039,7 +1065,7 @@ static void uw_ac_auto_boot_init(struct platform_device *dev)
 }
 
 static ssize_t uw_ac_auto_boot_show(struct device *child,
-				    struct device_attribute *attr, 
+				    struct device_attribute *attr,
 				    char *buffer)
 {
 	u8 ac_auto_boot_value;
@@ -1180,6 +1206,102 @@ static ssize_t uw_usb_powershare_store(struct device *child,
 		return -EIO;
 }
 
+static ssize_t raw_cycle_count_show(struct device *device,
+				struct device_attribute *attr,
+				char *buf)
+{
+	int result;
+	u16 cycle_count;
+	result = uniwill_read_ec_ram_u16(UW_EC_REG_BATTERY_CYCN_HI, UW_EC_REG_BATTERY_CYCN_LO, &cycle_count);
+	if (result)
+		return result;
+	return snprintf(buf, PAGE_SIZE, "%d\n", cycle_count);
+}
+
+static ssize_t raw_xif1_show(struct device *device,
+				struct device_attribute *attr,
+				char *buf)
+{
+	int result;
+	u16 xif1;
+	result = uniwill_read_ec_ram_u16(UW_EC_REG_BATTERY_XIF1_HI, UW_EC_REG_BATTERY_XIF1_LO, &xif1);
+	if (result)
+		return result;
+	return snprintf(buf, PAGE_SIZE, "%d\n", xif1);
+}
+
+static ssize_t raw_xif2_show(struct device *device,
+				struct device_attribute *attr,
+				char *buf)
+{
+	int result;
+	u16 xif2;
+	result = uniwill_read_ec_ram_u16(UW_EC_REG_BATTERY_XIF2_HI, UW_EC_REG_BATTERY_XIF2_LO, &xif2);
+	if (result)
+		return result;
+	return snprintf(buf, PAGE_SIZE, "%d\n", xif2);
+}
+
+static DEVICE_ATTR_RO(raw_cycle_count);
+static DEVICE_ATTR_RO(raw_xif1);
+static DEVICE_ATTR_RO(raw_xif2);
+
+static struct attribute *uw_battery_attrs[] = {
+	&dev_attr_raw_cycle_count.attr,
+	&dev_attr_raw_xif1.attr,
+	&dev_attr_raw_xif2.attr,
+	NULL,
+};
+
+ATTRIBUTE_GROUPS(uw_battery);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+static int uw_battery_add(struct power_supply *battery)
+#else
+static int uw_battery_add(struct power_supply *battery, struct acpi_battery_hook *hook)
+#endif
+{
+	TUXEDO_DEBUG("uw_battery_add\n");
+	if (device_add_groups(&battery->dev, uw_battery_groups))
+		return -ENODEV;
+
+	return 0;
+}
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 2, 0)
+static int uw_battery_remove(struct power_supply *battery)
+#else
+static int uw_battery_remove(struct power_supply *battery, struct acpi_battery_hook *hook)
+#endif
+{
+	TUXEDO_DEBUG("uw_battery_remove\n");
+	device_remove_groups(&battery->dev, uw_battery_groups);
+	return 0;
+}
+
+static struct acpi_battery_hook uw_battery_hook = {
+	.add_battery = uw_battery_add,
+	.remove_battery = uw_battery_remove,
+	.name = "TUXEDO Battery Extension",
+};
+
+static bool uw_battery_hook_registered = false;
+
+static void uw_battery_init(void)
+{
+	battery_hook_register(&uw_battery_hook);
+	uw_battery_hook_registered = true;
+}
+
+static void uw_battery_uninit(void)
+{
+	if (uw_battery_hook_registered)
+		battery_hook_unregister(&uw_battery_hook);
+	else
+		TUXEDO_ERROR("attempted to unregister battery hook which was not registered\n");
+}
+
+
 static bool uw_mini_led_local_dimming_loaded = false;
 static bool uw_mini_led_local_dimming_last_written_value;
 
@@ -1221,7 +1343,7 @@ static int uw_set_mini_led_local_dimming(u8 mini_led_local_dimming)
 					    uw_data);
 	} else {
 		result = uniwill_wmi_evaluate(UNIWILL_WMI_FUNCTION_FEATURE_TOGGLE,
-					    UNIWILL_WMI_LOCAL_DIMMING_OFF, 
+					    UNIWILL_WMI_LOCAL_DIMMING_OFF,
 					    uw_data);
 	}
 	if (result != 0)
@@ -1234,21 +1356,21 @@ static int uw_set_mini_led_local_dimming(u8 mini_led_local_dimming)
 
 static int uw_get_mini_led_local_dimming(u8 *mini_led_local_dimming)
 {
-	/* 
-	 * As of now, we do not have any possibility to read out the current state of local dimming. However, 
-	 * as this feature is set to disabled on boot per default by calling uw_set_mini_led_local_dimming, 
+	/*
+	 * As of now, we do not have any possibility to read out the current state of local dimming. However,
+	 * as this feature is set to disabled on boot per default by calling uw_set_mini_led_local_dimming,
 	 * uw_mini_led_local_dimming_last_written_value is always initialized and thereby should not cause
 	 * any harm.
 	 *
 	 * A rather hacky solution could be the following, as uniwill_wmi_evaluate writes the current state
 	 * into the return buffer before overwriting it:
-	 
+
 	 * u32 return_buffer;
 	 * bool initial_status;
 	 * uniwill_wmi_evaluate(local_dimming, off, return_buffer);
 	 * if (return_buffer == UNIWILL_WMI_LOCAL_DIMMING_ON)
 	 * 	initial_status = true;
-	 * else 
+	 * else
 	 * 	initial_status = false;
 	 * uniwill_wmi_evaluate(local_dimming, initial_status, return_buffer);
 	 * *mini_led_local_dimming = initial_status;
@@ -1261,7 +1383,7 @@ static int uw_has_mini_led_local_dimming(bool *status)
 {
 	u8 data;
 	int result;
-	
+
 	result = uniwill_read_ec_ram(UW_EC_REG_MINI_LED_LOCAL_DIMMING_SUPPORT,
 				     &data);
 	if (result)
@@ -1312,6 +1434,121 @@ static ssize_t uw_mini_led_local_dimming_store(struct device *child,
 		return size;
 	else
 		return -EIO;
+}
+
+static efi_guid_t uw_oem_magic_guid =
+	EFI_GUID(0x9f33f85c, 0x13ca, 0x4fd1,
+	         0x9c, 0x4a, 0x96, 0x21, 0x77, 0x22, 0xc5, 0x93);
+
+static int uw_has_hidden_bios_options(bool *status)
+{
+	*status = false
+		// Stellaris 16 G7
+		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY")
+		|| dmi_match(DMI_BOARD_NAME, "X6AR5xxY_mLED")
+		// IBM 16 G10
+		|| dmi_match(DMI_BOARD_NAME, "X6AR55xU");
+	return 0;
+}
+
+static void uw_show_hidden_bios_options(void)
+{
+	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
+	efi_status_t st;
+	u32 attr = 0;
+	unsigned long size = 0;
+	u8 *buf = NULL;
+	bool changed = false;
+	efi_char16_t name[] = L"OemMagicVariable";
+	u8 b1, b2;
+
+	if (!uw_feats->uniwill_has_hidden_bios_options) {
+		pr_debug("hidden_bios_options: not supported on this device\n");
+		return;
+	}
+
+	if (!efi_enabled(EFI_RUNTIME_SERVICES)) {
+		pr_warn(
+			"hidden_bios_options: EFI runtime services not available\n");
+		return;
+	}
+
+	st = efi.get_variable(name, &uw_oem_magic_guid, &attr, &size, NULL);
+	if (st != EFI_BUFFER_TOO_SMALL) {
+		pr_err(
+			"hidden_bios_options: get_variable probe failed: st=0x%lx\n",
+			(unsigned long)st);
+		return;
+	}
+
+	if (size <= UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SWITCH) {
+		pr_err(
+			"hidden_bios_options: EFI variable too small (%lu bytes)\n",
+			size);
+		return;
+	}
+
+	buf = kmalloc(size, GFP_KERNEL);
+	if (!buf) {
+		pr_err("hidden_bios_options: something went wrong during allocating read buffer\n");
+		return;
+	}
+
+	st = efi.get_variable(name, &uw_oem_magic_guid, &attr, &size, buf);
+	if (st != EFI_SUCCESS) {
+		pr_err(
+			"hidden_bios_options: get_variable read failed: st=0x%lx\n",
+			(unsigned long)st);
+		kfree(buf);
+		return;
+	}
+
+	if (buf[UW_MEMORY_OVERCLOCKING_SUPPORT] != 0x01 ||
+	    buf[UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SUPPORT] != 0x01) {
+		pr_warn(
+			"hidden_bios_options: support bits not set (mem=0x%02x cpu=0x%02x) -> skip\n",
+			buf[UW_MEMORY_OVERCLOCKING_SUPPORT],
+			buf[UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SUPPORT]);
+		kfree(buf);
+		return;
+	}
+
+	b1 = buf[UW_MEMORY_OVERCLOCKING_SWITCH];
+	b2 = buf[UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SWITCH];
+
+	if (!((b1 == 0x00 || b1 == 0x01) && (b2 == 0x00 || b2 == 0x01))) {
+		pr_err("hidden_bios_options: unexpected byte values off1=0x%02x off2=0x%02x -> skip\n",
+			b1, b2);
+		kfree(buf);
+		return;
+	}
+
+	if (b1 == 0x00) {
+		buf[UW_MEMORY_OVERCLOCKING_SWITCH] = 0x01;
+		changed = true;
+	}
+	if (b2 == 0x00) {
+		buf[UW_CPU_PERFORMANCE_AND_OVERCLOCKING_SWITCH] = 0x01;
+		changed = true;
+	}
+
+	if (!changed) {
+		pr_debug("hidden_bios_options: already enabled\n");
+		kfree(buf);
+		return;
+	}
+
+	st = efi.set_variable(name, &uw_oem_magic_guid, attr, size, buf);
+	if (st != EFI_SUCCESS) {
+		pr_warn("hidden_bios_options: set_variable failed: st=0x%lx\n",
+			(unsigned long)st);
+		kfree(buf);
+		return;
+	}
+
+	pr_info("hidden_bios_options: enabled hidden BIOS options\n");
+
+	kfree(buf);
 }
 
 static const u8 uw_romid_PH4PxX[14] = {0x0C, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -1405,10 +1642,20 @@ static int has_universal_ec_fan_control(void) {
 
 	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
 
-	if (uw_feats->model == UW_MODEL_PH4TRX) {
+	bool universal_fan_control_exception = false
 		// For some reason, on this particular device, the 2nd fan is not controlled via the
 		// "GPU" fan curve when the bit to separate both fancurves is set, but the old fan
 		// control works just fine.
+		|| uw_feats->model == UW_MODEL_PH4TRX
+		// For some devices the "universal fan control" doesn't work for turning the fans
+		// off reliably, however, the old fan control works.
+		|| dmi_match(DMI_BOARD_NAME, "GXxMRXx")
+		|| dmi_match(DMI_BOARD_NAME, "XxAR4NAx")
+		|| dmi_match(DMI_BOARD_NAME, "X6FR5xxY")
+		|| dmi_match(DMI_BOARD_NAME, "X5AR45xS")
+	;
+
+	if (universal_fan_control_exception) {
 		return 0;
 	}
 
@@ -1510,6 +1757,9 @@ struct uniwill_device_features_t *uniwill_get_device_features(void)
 		|| dmi_match(DMI_BOARD_NAME, "XxHP4NAx")
 		|| dmi_match(DMI_BOARD_NAME, "XxKK4NAx_XxSP4NAx")
 		|| dmi_match(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS")
+		|| dmi_match(DMI_BOARD_NAME, "X6KK45xU_X6SP45xU")
+		|| dmi_match(DMI_BOARD_NAME, "X6AR55xU")
+		|| dmi_match(DMI_BOARD_NAME, "X5AR45xS")
 #endif
 	;
 
@@ -1530,6 +1780,8 @@ struct uniwill_device_features_t *uniwill_get_device_features(void)
 	if (uw_has_usb_powershare(&uw_feats->uniwill_has_usb_powershare) != 0)
 		feats_loaded = false;
 	if (uw_has_mini_led_local_dimming(&uw_feats->uniwill_has_mini_led_local_dimming) != 0)
+		feats_loaded = false;
+	if (uw_has_hidden_bios_options(&uw_feats->uniwill_has_hidden_bios_options) != 0)
 		feats_loaded = false;
 
 	result = has_universal_ec_fan_control();
@@ -1639,6 +1891,233 @@ static bool uniwill_fn_lock_available(void){
 		return 1;
 }
 
+static u8 direct_fan_control_current_value_fan0 = 0;
+static u8 direct_fan_control_current_value_fan1 = 0;
+static u8 direct_fan_control_current_value_fan0_suspend_save = 0;
+static u8 direct_fan_control_current_value_fan1_suspend_save = 0;
+static bool fans_initialized = false;
+static bool direct_fan_control_started = false;
+static bool direct_fan_control_suspend = false;
+static void restart_direct_fan_control_work_handler(struct work_struct *work);
+static DECLARE_DELAYED_WORK(direct_fan_control_restart_delayed_work, restart_direct_fan_control_work_handler);
+
+int set_full_fan_mode(bool enable) {
+	u8 mode_data;
+
+	uniwill_read_ec_ram(0x0751, &mode_data);
+
+	if (enable && !(mode_data & 0x40)) {
+		// If not "full fan mode" (i.e. 0x40 bit not set) switch to it (required for old fancontrol)
+		return uniwill_write_ec_ram(0x0751, mode_data | 0x40);
+	}
+	else if (mode_data & 0x40){
+		// If "full fan mode" (i.e. 0x40 bit set) turn it off (required for new fancontrol)
+		return uniwill_write_ec_ram(0x0751, mode_data & ~0x40);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(set_full_fan_mode);
+
+int uw_init_fan(void) {
+	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
+	int i, temp_offset;
+
+	u16 addr_use_custom_fan_table_0 = 0x07c5; // use different tables for both fans (0x0f00-0x0f2f and 0x0f30-0x0f5f respectivly)
+	u16 addr_use_custom_fan_table_1 = 0x07c6; // enable 0x0fxx fantables
+	u8 offset_use_custom_fan_table_0 = 7;
+	u8 offset_use_custom_fan_table_1 = 2;
+	u8 value_use_custom_fan_table_0;
+	u8 value_use_custom_fan_table_1;
+	u16 addr_cpu_custom_fan_table_end_temp = 0x0f00;
+	u16 addr_cpu_custom_fan_table_start_temp = 0x0f10;
+	u16 addr_cpu_custom_fan_table_fan_speed = 0x0f20;
+	u16 addr_gpu_custom_fan_table_end_temp = 0x0f30;
+	u16 addr_gpu_custom_fan_table_start_temp = 0x0f40;
+	u16 addr_gpu_custom_fan_table_fan_speed = 0x0f50;
+
+	if (!fans_initialized && uw_feats->uniwill_has_universal_ec_fan_control) {
+		set_full_fan_mode(false);
+
+		uniwill_read_ec_ram(addr_use_custom_fan_table_0, &value_use_custom_fan_table_0);
+		if (!((value_use_custom_fan_table_0 >> offset_use_custom_fan_table_0) & 1)) {
+			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_0, value_use_custom_fan_table_0 + (1 << offset_use_custom_fan_table_0), 3);
+		}
+
+		// Setup
+		// - one controllable zone 0-115 deg
+		// - rest 116-117, 117-118 etc single non reachable dummy zones
+		//   with increasing ranges and max fan (same or increasing)
+		uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_end_temp, 115, 3);
+		uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_start_temp, 0, 3);
+		uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_fan_speed, 0x01, 3);
+		uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_end_temp, 120, 3);
+		uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_start_temp, 0, 3);
+		uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_fan_speed, 0x01, 3);
+		temp_offset = 115;
+		for (i = 0x1; i <= 0xf; ++i) {
+			uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_end_temp + i, temp_offset + i + 1, 3);
+			uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_start_temp + i, temp_offset + i, 3);
+			uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_fan_speed + i, 0xc8, 3);
+			uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_end_temp + i, temp_offset + i + 1, 3);
+			uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_start_temp + i, temp_offset + i, 3);
+			uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_fan_speed + i, 0xc8, 3);
+		}
+
+		uniwill_read_ec_ram(addr_use_custom_fan_table_1, &value_use_custom_fan_table_1);
+		if (!((value_use_custom_fan_table_1 >> offset_use_custom_fan_table_1) & 1)) {
+			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_1, value_use_custom_fan_table_1 + (1 << offset_use_custom_fan_table_1), 3);
+		}
+	}
+
+	fans_initialized = true;
+
+	return 0;
+}
+EXPORT_SYMBOL(uw_init_fan);
+
+static void restart_direct_fan_control_work_handler(struct work_struct *work)
+{
+	int i;
+	u16 addr_fan0 = 0x1804;
+	u16 addr_fan1 = 0x1809;
+
+	pr_debug("restart fan control\n");
+
+	set_full_fan_mode(false);
+	msleep(10);
+	set_full_fan_mode(true);
+
+	// Attempt to write both fans as quick as possible before complete ramp-up
+	pr_debug("prevent ramp-up start\n");
+	for (i = 0; i < 10; ++i) {
+		uniwill_write_ec_ram(addr_fan0, direct_fan_control_current_value_fan0 & 0xff);
+		uniwill_write_ec_ram(addr_fan1, direct_fan_control_current_value_fan1 & 0xff);
+		msleep(10);
+	}
+	pr_debug("prevent ramp-up done\n");
+
+	schedule_delayed_work(&direct_fan_control_restart_delayed_work, msecs_to_jiffies(50 * 60 * 1000));
+}
+
+static int direct_fan_control(u32 fan_index, u8 fan_speed, bool prevent_rampup)
+{
+	u16 addr_for_fan;
+	u16 addr_fan0 = 0x1804;
+	u16 addr_fan1 = 0x1809;
+
+	if (fan_index == 0) {
+		addr_for_fan = addr_fan0;
+		direct_fan_control_current_value_fan0 = fan_speed;
+	} else if (fan_index == 1) {
+		addr_for_fan = addr_fan1;
+		direct_fan_control_current_value_fan1 = fan_speed;
+	} else {
+		return -EINVAL;
+	}
+
+	if (prevent_rampup && !direct_fan_control_started) {
+		direct_fan_control_started = true;
+		schedule_delayed_work(&direct_fan_control_restart_delayed_work, 0);
+	} else {
+		uniwill_write_ec_ram(addr_for_fan, fan_speed & 0xff);
+	}
+
+	return 0;
+}
+
+u32 uw_set_fan(u32 fan_index, u8 fan_speed)
+{
+	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
+	u16 addr_for_fan;
+
+	u16 addr_cpu_custom_fan_table_fan_speed = 0x0f20;
+	u16 addr_gpu_custom_fan_table_fan_speed = 0x0f50;
+
+	u8 byte_data;
+
+	if (uw_feats->uniwill_has_universal_ec_fan_control) {
+		uniwill_read_ec_ram(0x0751, &byte_data);
+		if (!(byte_data & 0x40)) {
+			uw_init_fan();
+
+			if (fan_index == 0)
+				addr_for_fan = addr_cpu_custom_fan_table_fan_speed;
+			else if (fan_index == 1)
+				addr_for_fan = addr_gpu_custom_fan_table_fan_speed;
+			else
+				return -EINVAL;
+
+			if (fan_speed > NB02_FAN_SPEED_MAX)
+				return -EINVAL;
+
+			// Don't allow vallues between fan-off and minimum fan-on-speed
+			if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 2 / 100)
+				fan_speed = 0;
+			else if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100)
+				fan_speed = FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100;
+
+			if (fan_speed == 0) {
+				// Avoid hard coded EC behaviour: Setting fan speed = 0x00 spins the fan up
+				// to 0x3c (30%) for 3 minutes before going to 0x00. Setting fan speed = 1
+				// also causes the fan to stop since on 2020 or later TF devices the
+				// microcontroller in the fan itself is intelligent enough to not try to
+				// start up the motor when the speed is to slow. Older devices don't use
+				// this fan controll anyway, but the else case below.
+				fan_speed = 1;
+			}
+
+			uniwill_write_ec_ram(addr_for_fan, fan_speed & 0xff);
+
+			direct_fan_control(fan_index, fan_speed, false);
+		}
+	}
+	else { // old workaround using full fan mode
+		direct_fan_control(fan_index, fan_speed, true);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(uw_set_fan);
+
+u32 uw_set_fan_auto(void)
+{
+	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
+	u8 mode_data;
+
+	if (uw_feats->uniwill_has_universal_ec_fan_control) {
+		u16 addr_use_custom_fan_table_0 = 0x07c5; // use different tables for both fans (0x0f00-0x0f2f and 0x0f30-0x0f5f respectivly)
+		u16 addr_use_custom_fan_table_1 = 0x07c6; // enable 0x0fxx fantables
+		u8 offset_use_custom_fan_table_0 = 7;
+		u8 offset_use_custom_fan_table_1 = 2;
+		u8 value_use_custom_fan_table_0;
+		u8 value_use_custom_fan_table_1;
+		uniwill_read_ec_ram(addr_use_custom_fan_table_1, &value_use_custom_fan_table_1);
+		if ((value_use_custom_fan_table_1 >> offset_use_custom_fan_table_1) & 1) {
+			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_1, value_use_custom_fan_table_1 - (1 << offset_use_custom_fan_table_1), 3);
+		}
+		uniwill_read_ec_ram(addr_use_custom_fan_table_0, &value_use_custom_fan_table_0);
+		if ((value_use_custom_fan_table_0 >> offset_use_custom_fan_table_0) & 1) {
+			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_0, value_use_custom_fan_table_0 - (1 << offset_use_custom_fan_table_0), 3);
+		}
+		fans_initialized = false;
+	}
+	else {
+		cancel_delayed_work_sync(&direct_fan_control_restart_delayed_work);
+		direct_fan_control_started = false;
+		// Get current mode
+		uniwill_read_ec_ram(0x0751, &mode_data);
+		// Switch off "full fan mode" (i.e. unset 0x40 bit)
+		uniwill_write_ec_ram(0x0751, mode_data & 0xbf);
+	}
+
+	direct_fan_control_current_value_fan0 = 0;
+	direct_fan_control_current_value_fan1 = 0;
+
+	return 0;
+}
+EXPORT_SYMBOL(uw_set_fan_auto);
+
 static u8 uniwill_touchp_toggle_seq[] = {
 	0xe0, 0x5b, // Super down
 	0x1d,       // Control down
@@ -1728,6 +2207,8 @@ static int uniwill_keyboard_probe(struct platform_device *dev)
 	uw_ac_auto_boot_init(dev);
 	uw_usb_powershare_init(dev);
 	uw_mini_led_local_dimming_init(dev);
+	uw_show_hidden_bios_options();
+	uw_battery_init();
 
 	// Ignore return value, it just means there is already a filter active
 	// which is fine, because it is probably just the upstream patch of this
@@ -1754,6 +2235,8 @@ static void uniwill_keyboard_remove(struct platform_device *dev)
 	if (uw_charging_profile_loaded)
 		sysfs_remove_group(&dev->dev.kobj, &uw_charging_profile_attr_group);
 
+	uw_battery_uninit();
+
 	uniwill_leds_remove(dev);
 
 	// Restore previous backlight enable state
@@ -1770,6 +2253,8 @@ static void uniwill_keyboard_remove(struct platform_device *dev)
 	// Ignore return value, it just means this filter was not active atm.
 	if (i8042_remove_filter(uniwill_i8042_filter))
 		pr_info("Could not remove i8042 filter.\n");
+
+	cancel_delayed_work_sync(&direct_fan_control_restart_delayed_work);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
 	return 0;
@@ -1788,6 +2273,12 @@ static int uniwill_keyboard_suspend(struct platform_device *dev, pm_message_t st
 		uniwill_write_ec_ram(0x0727, data);
 	}
 	uniwill_write_kbd_bl_enable(0);
+	if (direct_fan_control_started) {
+		direct_fan_control_suspend = true;
+		direct_fan_control_current_value_fan0_suspend_save = direct_fan_control_current_value_fan0;
+		direct_fan_control_current_value_fan1_suspend_save = direct_fan_control_current_value_fan1;
+		uw_set_fan_auto();
+	}
 	return 0;
 }
 
@@ -1795,6 +2286,13 @@ static int uniwill_keyboard_resume(struct platform_device *dev)
 {
 	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
 	u8 data;
+
+	if (direct_fan_control_suspend) {
+		direct_fan_control_suspend = false;
+		uw_set_fan(0, direct_fan_control_current_value_fan0_suspend_save);
+		uw_set_fan(1, direct_fan_control_current_value_fan1_suspend_save);
+	}
+
 	if (uw_feats->uniwill_custom_profile_mode_needed) {
 		// Re-set "customer mode light" on resume
 		uniwill_read_ec_ram(0x0727, &data);
@@ -1803,6 +2301,9 @@ static int uniwill_keyboard_resume(struct platform_device *dev)
 	}
 	uniwill_leds_restore_state_extern();
 	uniwill_write_kbd_bl_enable(1);
+	// Restore charging settings on resume
+	uw_charging_priority_write_state();
+	uw_charging_profile_write_state();
 	return 0;
 }
 

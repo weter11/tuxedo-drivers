@@ -55,16 +55,6 @@ static u32 id_check_uniwill;
 
 static struct uniwill_device_features_t *uw_feats;
 
-enum uw_perf_profiles_v1 {
-	PROFILE_POWERSAVE = 1,
-	PROFILE_ENTHUSIAST = 2,
-	PROFILE_OVERBOOST = 3,
-};
-
-static int set_full_fan_mode(bool enable);
-static int uw_init_fan(void);
-static u32 uw_set_fan(u32 fan_index, u8 fan_speed);
-static u32 uw_set_fan_auto(void);
 static int uw_get_tdp_min(u8 tdp_index);
 static int uw_get_tdp_max(u8 tdp_index);
 static int uw_get_tdp(u8 tdp_index);
@@ -162,6 +152,15 @@ static int tdp_max_x6fr5xx[] = { 0xa2, 0xa2, 0xc3 };
 static int tdp_min_xxxx45xs[] = { 0x0a, 0x0a, 0x0a };
 static int tdp_max_xxxx45xs[] = { 0x64, 0x64, 0x69 };
 
+static int tdp_min_x6ar55xu[] = { 0x0a, 0x0a, 0x0a };
+static int tdp_max_x6ar55xu[] = { 0x91, 0x9b, 0x122 };
+
+static int tdp_min_x5ar45xs[] = { 0x0a, 0x0a, 0x0a };
+static int tdp_max_x5ar45xs[] = { 0x5a, 0x5a, 0xe6 };
+
+static int tdp_min_x6xx45xu[] = { 0x0a, 0x0a, 0x0a };
+static int tdp_max_x6xx45xu[] = { 0x64, 0x64, 0x69 };
+
 static int *tdp_min_defs = NULL;
 static int *tdp_max_defs = NULL;
 
@@ -248,6 +247,15 @@ static void uw_id_tdp(void)
 	} else if (dmi_match(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS")) {
 		tdp_min_defs = tdp_min_xxxx45xs;
 		tdp_max_defs = tdp_max_xxxx45xs;
+	} else if (dmi_match(DMI_BOARD_NAME, "X6AR55xU")) {
+		tdp_min_defs = tdp_min_x6ar55xu;
+		tdp_max_defs = tdp_max_x6ar55xu;
+	} else if (dmi_match(DMI_BOARD_NAME, "X5AR45xS")) {
+		tdp_min_defs = tdp_min_x5ar45xs;
+		tdp_max_defs = tdp_max_x5ar45xs;
+	} else if (dmi_match(DMI_BOARD_NAME, "X6KK45xU_X6SP45xU")) {
+		tdp_min_defs = tdp_min_x6xx45xu;
+		tdp_max_defs = tdp_max_x6xx45xu;
 #endif
 	} else {
 		tdp_min_defs = NULL;
@@ -387,204 +395,6 @@ static long clevo_ioctl_interface(struct file *file, unsigned int cmd, unsigned 
 	return 0;
 }
 
-static int set_full_fan_mode(bool enable) {
-	u8 mode_data;
-
-	uniwill_read_ec_ram(0x0751, &mode_data);
-
-	if (enable && !(mode_data & 0x40)) {
-		// If not "full fan mode" (i.e. 0x40 bit not set) switch to it (required for old fancontrol)
-		return uniwill_write_ec_ram(0x0751, mode_data | 0x40);
-	}
-	else if (mode_data & 0x40){
-		// If "full fan mode" (i.e. 0x40 bit set) turn it off (required for new fancontrol)
-		return uniwill_write_ec_ram(0x0751, mode_data & ~0x40);
-	}
-
-	return 0;
-}
-
-static bool fans_initialized = false;
-
-static int uw_init_fan(void) {
-	int i, temp_offset;
-
-	u16 addr_use_custom_fan_table_0 = 0x07c5; // use different tables for both fans (0x0f00-0x0f2f and 0x0f30-0x0f5f respectivly)
-	u16 addr_use_custom_fan_table_1 = 0x07c6; // enable 0x0fxx fantables
-	u8 offset_use_custom_fan_table_0 = 7;
-	u8 offset_use_custom_fan_table_1 = 2;
-	u8 value_use_custom_fan_table_0;
-	u8 value_use_custom_fan_table_1;
-	u16 addr_cpu_custom_fan_table_end_temp = 0x0f00;
-	u16 addr_cpu_custom_fan_table_start_temp = 0x0f10;
-	u16 addr_cpu_custom_fan_table_fan_speed = 0x0f20;
-	u16 addr_gpu_custom_fan_table_end_temp = 0x0f30;
-	u16 addr_gpu_custom_fan_table_start_temp = 0x0f40;
-	u16 addr_gpu_custom_fan_table_fan_speed = 0x0f50;
-
-	if (!fans_initialized && uw_feats->uniwill_has_universal_ec_fan_control) {
-		set_full_fan_mode(false);
-
-		uniwill_read_ec_ram(addr_use_custom_fan_table_0, &value_use_custom_fan_table_0);
-		if (!((value_use_custom_fan_table_0 >> offset_use_custom_fan_table_0) & 1)) {
-			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_0, value_use_custom_fan_table_0 + (1 << offset_use_custom_fan_table_0), 3);
-		}
-
-		// Setup
-		// - one controllable zone 0-115 deg
-		// - rest 116-117, 117-118 etc single non reachable dummy zones
-		//   with increasing ranges and max fan (same or increasing)
-		uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_end_temp, 115, 3);
-		uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_start_temp, 0, 3);
-		uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_fan_speed, 0x00, 3);
-		uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_end_temp, 120, 3);
-		uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_start_temp, 0, 3);
-		uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_fan_speed, 0x00, 3);
-		temp_offset = 115;
-		for (i = 0x1; i <= 0xf; ++i) {
-			uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_end_temp + i, temp_offset + i + 1, 3);
-			uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_start_temp + i, temp_offset + i, 3);
-			uniwill_write_ec_ram_with_retry(addr_cpu_custom_fan_table_fan_speed + i, 0xc8, 3);
-			uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_end_temp + i, temp_offset + i + 1, 3);
-			uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_start_temp + i, temp_offset + i, 3);
-			uniwill_write_ec_ram_with_retry(addr_gpu_custom_fan_table_fan_speed + i, 0xc8, 3);
-		}
-
-		uniwill_read_ec_ram(addr_use_custom_fan_table_1, &value_use_custom_fan_table_1);
-		if (!((value_use_custom_fan_table_1 >> offset_use_custom_fan_table_1) & 1)) {
-			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_1, value_use_custom_fan_table_1 + (1 << offset_use_custom_fan_table_1), 3);
-		}
-	}
-
-	fans_initialized = true;
-
-	return 0;
-}
-
-static int direct_fan_control(u32 fan_index, u8 fan_speed, bool prevent_rampup)
-{
-	int i;
-	u8 mode_data;
-	u16 addr_for_fan;
-	u16 addr_fan0 = 0x1804;
-	u16 addr_fan1 = 0x1809;
-
-	if (fan_index == 0)
-		addr_for_fan = addr_fan0;
-	else if (fan_index == 1)
-		addr_for_fan = addr_fan1;
-	else
-		return -EINVAL;
-
-	if (prevent_rampup) {
-		// Check current mode
-		uniwill_read_ec_ram(0x0751, &mode_data);
-		prevent_rampup = !(mode_data & 0x40);
-	}
-
-	if (prevent_rampup) {
-		// If not "full fan mode" (i.e. 0x40 bit set) switch to it (required for fancontrol)
-		set_full_fan_mode(true);
-		// Attempt to write both fans as quick as possible before complete ramp-up
-		pr_debug("prevent ramp-up start\n");
-		for (i = 0; i < 10; ++i) {
-			uniwill_write_ec_ram(addr_fan0, fan_speed & 0xff);
-			uniwill_write_ec_ram(addr_fan1, fan_speed & 0xff);
-			msleep(10);
-		}
-		pr_debug("prevent ramp-up done\n");
-	} else {
-		// Otherwise just set the chosen fan
-		uniwill_write_ec_ram(addr_for_fan, fan_speed & 0xff);
-	}
-
-	return 0;
-}
-
-static u32 uw_set_fan(u32 fan_index, u8 fan_speed)
-{
-	u16 addr_for_fan;
-
-	u16 addr_cpu_custom_fan_table_fan_speed = 0x0f20;
-	u16 addr_gpu_custom_fan_table_fan_speed = 0x0f50;
-
-	u8 byte_data;
-
-	if (uw_feats->uniwill_has_universal_ec_fan_control) {
-		uniwill_read_ec_ram(0x0751, &byte_data);
-		if (!(byte_data & 0x40)) {
-			uw_init_fan();
-
-			if (fan_index == 0)
-				addr_for_fan = addr_cpu_custom_fan_table_fan_speed;
-			else if (fan_index == 1)
-				addr_for_fan = addr_gpu_custom_fan_table_fan_speed;
-			else
-				return -EINVAL;
-
-			if (fan_speed > NB02_FAN_SPEED_MAX)
-				return -EINVAL;
-
-			// Don't allow vallues between fan-off and minimum fan-on-speed
-			if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 2 / 100)
-				fan_speed = 0;
-			else if (fan_speed < FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100)
-				fan_speed = FAN_ON_MIN_SPEED_PERCENT * NB02_FAN_SPEED_MAX / 100;
-
-			if (fan_speed == 0 &&
-			!dmi_match(DMI_BOARD_NAME, "GXxMRXx")) {
-				// Avoid hard coded EC behaviour: Setting fan speed = 0x00 spins the fan up
-				// to 0x3c (30%) for 3 minutes before going to 0x00. Setting fan speed = 1
-				// also causes the fan to stop since on 2020 or later TF devices the
-				// microcontroller in the fan itself is intelligent enough to not try to
-				// start up the motor when the speed is to slow. Older devices don't use
-				// this fan controll anyway, but the else case below.
-				fan_speed = 1;
-			}
-
-			uniwill_write_ec_ram(addr_for_fan, fan_speed & 0xff);
-
-			direct_fan_control(fan_index, fan_speed, false);
-		}
-	}
-	else { // old workaround using full fan mode
-		direct_fan_control(fan_index, fan_speed, true);
-	}
-
-	return 0;
-}
-
-static u32 uw_set_fan_auto(void)
-{
-	u8 mode_data;
-
-	if (uw_feats->uniwill_has_universal_ec_fan_control) {
-		u16 addr_use_custom_fan_table_0 = 0x07c5; // use different tables for both fans (0x0f00-0x0f2f and 0x0f30-0x0f5f respectivly)
-		u16 addr_use_custom_fan_table_1 = 0x07c6; // enable 0x0fxx fantables
-		u8 offset_use_custom_fan_table_0 = 7;
-		u8 offset_use_custom_fan_table_1 = 2;
-		u8 value_use_custom_fan_table_0;
-		u8 value_use_custom_fan_table_1;
-		uniwill_read_ec_ram(addr_use_custom_fan_table_1, &value_use_custom_fan_table_1);
-		if ((value_use_custom_fan_table_1 >> offset_use_custom_fan_table_1) & 1) {
-			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_1, value_use_custom_fan_table_1 - (1 << offset_use_custom_fan_table_1), 3);
-		}
-		uniwill_read_ec_ram(addr_use_custom_fan_table_0, &value_use_custom_fan_table_0);
-		if ((value_use_custom_fan_table_0 >> offset_use_custom_fan_table_0) & 1) {
-			uniwill_write_ec_ram_with_retry(addr_use_custom_fan_table_0, value_use_custom_fan_table_0 - (1 << offset_use_custom_fan_table_0), 3);
-		}
-		fans_initialized = false;
-	}
-	else {
-		// Get current mode
-		uniwill_read_ec_ram(0x0751, &mode_data);
-		// Switch off "full fan mode" (i.e. unset 0x40 bit)
-		uniwill_write_ec_ram(0x0751, mode_data & 0xbf);
-	}
-
-	return 0;
-}
-
 static int uw_get_tdp_min(u8 tdp_index)
 {
 	if (tdp_index > 2)
@@ -648,9 +458,9 @@ static int uw_set_tdp(u8 tdp_index, int tdp_value)
 	u16 tdp_current_addr = tdp_base_addr + tdp_index;
 
 	if (uw_feats->uniwill_custom_profile_mode_needed) {
-		// Ensure that "enthusiast" profile is chosen when using TDP set
+		// Ensure that "overboost" profile is chosen when using TDP set
 		// for devices that require this
-		uw_set_performance_profile_v1(PROFILE_ENTHUSIAST);
+		uw_set_performance_profile_v1(PROFILE_OVERBOOST);
 	}
 
 	// Use min tdp to detect support for chosen tdp parameter

@@ -80,6 +80,13 @@ typedef void (uniwill_event_callb_t)(u32);
 #define UW_EC_REG_USB_POWERSHARE_STATUS			0x0767
 #define UW_EC_REG_MINI_LED_LOCAL_DIMMING_SUPPORT	0x0D4F
 
+#define UW_EC_REG_BATTERY_CYCN_LO	0x04A6
+#define UW_EC_REG_BATTERY_CYCN_HI	0x04A7
+#define UW_EC_REG_BATTERY_XIF1_LO	0x0402
+#define UW_EC_REG_BATTERY_XIF1_HI	0x0403
+#define UW_EC_REG_BATTERY_XIF2_LO	0x0404
+#define UW_EC_REG_BATTERY_XIF2_HI	0x0405
+
 #define UW_EC_REG_FAN_CTRL_STATUS			0x078e
 #define UW_EC_REG_FAN_CTRL_STATUS_BIT_HAS_UW_FAN_CTRL	0x40
 
@@ -161,6 +168,7 @@ struct uniwill_device_features_t {
 	bool uniwill_has_ac_auto_boot;
 	bool uniwill_has_usb_powershare;
 	bool uniwill_has_mini_led_local_dimming;
+	bool uniwill_has_hidden_bios_options;
 };
 
 struct uniwill_device_features_t *uniwill_get_device_features(void);
@@ -182,5 +190,18 @@ union uw_ec_write_return {
 		u8 data_high;
 	} bytes;
 };
+
+enum uw_perf_profiles_v1 {
+	PROFILE_POWERSAVE = 1,
+	PROFILE_ENTHUSIAST = 2,
+	PROFILE_OVERBOOST = 3,
+};
+
+#define NB02_FAN_SPEED_MAX 0xc8
+
+int set_full_fan_mode(bool enable);
+int uw_init_fan(void);
+u32 uw_set_fan(u32 fan_index, u8 fan_speed);
+u32 uw_set_fan_auto(void);
 
 #endif

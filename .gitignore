@@ -8,19 +8,14 @@
 modules.order
 Module.symvers
 
-# debuild artifacts
-/debian/*.debhelper
-/debian/*.debhelper.log
-/debian/*.substvars
-/debian/debhelper-build-stamp
-/debian/files
-/debian/tuxedo-drivers
-
-# rpmbuild artifacts
-/src/dkms.conf
-/tuxedo-drivers.spec
+# build artifacts
+/build/
+/build-alpm/
+/build-deb/
+/build-rpm/
 
 # IDE artifacts
 *.kate-swp
 /*.kdev4
 /.vscode
+/.cache

@@ -215,13 +215,20 @@ static void color_scaling(struct hid_device *hdev, u8 *red, u8 *green, u8 *blue,
 			*red = (148 * *red) / 255;
 			*blue = (137 * *blue) / 255;
 		}
-	} else if ((dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07") || dmi_match(DMI_PRODUCT_SKU, "STELLARIS16A07"))
+	} else if ((dmi_match(DMI_PRODUCT_SKU, "STELLARIS16I07") ||
+		    dmi_match(DMI_PRODUCT_SKU, "STELLARIS16A07") ||
+		    dmi_match(DMI_BOARD_NAME, "X6AR55xU"))
 		   && hdev->product == 0x600b) {
 		// all keys: reduce pink
 		*red = (170 * *red) / 255;
 		*blue = (125 * *blue) / 255;
 	} else if (dmi_match(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS")) {
 		*red = (180 * *red) / 255;
+	} else if (dmi_match(DMI_BOARD_NAME, "X5AR45xS")) {
+		// No scaling
+	} else if (dmi_match(DMI_BOARD_NAME, "X6KK45xU_X6SP45xU")) {
+		*red = (187 * *red) / 255;
+		*blue = (153 * *blue) / 255;
 	} else {
 		*green = (126 * *green) / 255;
 		*blue = (120 * *blue) / 255;
