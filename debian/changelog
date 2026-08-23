@@ -1,3 +1,10 @@
+tuxedo-drivers (4.22.3) noble; urgency=medium
+
+  * Sync with upstream 4.22.3 (fan-mod fork: FAN_ON_MIN_SPEED_PERCENT=0)
+  * Restore DKMS packaging after upstream rework
+
+ -- weter11 <weter11@users.noreply.github.com>  Sun, 23 Aug 2026 14:00:00 -0200
+
 tuxedo-drivers (4.18.2) noble; urgency=medium
 
   * Change default of EC write method for NB02 to potentially fix stuck fanspeed
