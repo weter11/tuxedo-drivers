@@ -34,6 +34,15 @@ struct clevo_acpi_driver_data_t {
 
 static struct clevo_acpi_driver_data_t *active_driver_data = NULL;
 
+/*
+ * Some firmwares do not implement every _DSM function: on this Clevo/XMG unit
+ * func 4 on \_SB.DCHU fails with AE_AML_BUFFER_LIMIT, and the ACPI interpreter
+ * then dumps a full error backtrace for *every* call. A userspace client
+ * polling at a few Hz therefore writes gigabytes of identical noise into the
+ * kernel log. Remember which commands failed and skip the firmware for them.
+ */
+static DECLARE_BITMAP(clevo_acpi_failed_cmds, 256);
+
 static int clevo_acpi_evaluate(struct acpi_device *device, u8 cmd, u32 arg, union acpi_object **result)
 {
 	int status;
@@ -58,6 +67,9 @@ static int clevo_acpi_evaluate(struct acpi_device *device, u8 cmd, u32 arg, unio
 		.package.elements = dsm_argv4_package_data
 	};
 
+	if (test_bit(cmd, clevo_acpi_failed_cmds))
+		return -ENOTSUPP;
+
 	status = guid_parse(CLEVO_ACPI_DSM_UUID, &clevo_acpi_dsm_uuid);
 	if (status < 0)
 		return -ENOENT;
@@ -68,7 +80,8 @@ static int clevo_acpi_evaluate(struct acpi_device *device, u8 cmd, u32 arg, unio
 
 	out_obj = acpi_evaluate_dsm(handle, &clevo_acpi_dsm_uuid, dsm_rev_dummy, dsm_func, &dsm_argv4);
 	if (!out_obj) {
-		pr_err("failed to evaluate _DSM\n");
+		if (!test_and_set_bit(cmd, clevo_acpi_failed_cmds))
+			pr_warn("failed to evaluate _DSM (cmd %#04x) - command disabled\n", cmd);
 		status = -1;
 	}
 	else {
@@ -105,6 +118,9 @@ static int clevo_acpi_evaluate_pkgbuf(struct acpi_device *device, u8 cmd, u8 *ar
 
 	guid_t clevo_acpi_dsm_uuid;
 
+	if (test_bit(cmd, clevo_acpi_failed_cmds))
+		return -ENOTSUPP;
+
 	status = guid_parse(CLEVO_ACPI_DSM_UUID, &clevo_acpi_dsm_uuid);
 	if (status < 0)
 		return -ENOENT;
@@ -115,7 +131,8 @@ static int clevo_acpi_evaluate_pkgbuf(struct acpi_device *device, u8 cmd, u8 *ar
 
 	out_obj = acpi_evaluate_dsm(handle, &clevo_acpi_dsm_uuid, dsm_rev_dummy, dsm_func, &dsm_argv4);
 	if (!out_obj) {
-		pr_err("failed to evaluate _DSM\n");
+		if (!test_and_set_bit(cmd, clevo_acpi_failed_cmds))
+			pr_warn("failed to evaluate _DSM (cmd %#04x) - command disabled\n", cmd);
 		status = -1;
 	}
 	else {
@@ -177,6 +194,8 @@ static int clevo_acpi_add(struct acpi_device *device)
 
 	active_driver_data = driver_data;
 
+	bitmap_zero(clevo_acpi_failed_cmds, 256);
+
 	pr_debug("clevo_acpi driver add\n");
 
 	// Add this interface
@@ -236,6 +255,8 @@ static int driver_suspend_callb(struct device *dev)
 static int driver_resume_callb(struct device *dev)
 {
 	pr_debug("driver resume\n");
+	/* firmware state may have changed while suspended - allow re-probe */
+	bitmap_zero(clevo_acpi_failed_cmds, 256);
 	return 0;
 }
 
