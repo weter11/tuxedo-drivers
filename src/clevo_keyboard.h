@@ -669,12 +669,39 @@ static int clevo_cc4_flexicharger_read(u8 *start, u8 *end, u8 *status)
 	return result;
 }
 
+/*
+ * The cc4 probe costs one ACPI _DSM evaluation, and on firmware that does not
+ * implement it (XMG APEX 15/17 M21: \_SB.DCHU._DSM func 4 aborts with
+ * AE_AML_BUFFER_LIMIT) every failed evaluation makes the interpreter dump a full
+ * backtrace into the kernel log. Probing it on every flexicharger read therefore
+ * turns "feature absent" into a log flood: measured 6,380 events/hour (~1 GiB of
+ * /var/log per week) while a userspace client polled the charge attributes.
+ *
+ * Probe once and remember the answer. The cache is re-armed on interface bind
+ * and on resume-from-suspend - the same triggers used by the per-command failure
+ * cache in clevo_acpi.c and by the userspace capability gate - so all three
+ * "assume broken" mechanisms reset together instead of one being boot-only.
+ */
+static bool cc4_flexicharger_probe_done;
+static bool cc4_flexicharger_available;
+
+static void clevo_flexicharger_probe_reset(void)
+{
+	cc4_flexicharger_probe_done = false;
+	cc4_flexicharger_available = false;
+}
+
 static int clevo_has_cc4_flexicharger(bool *status)
 {
-	if (clevo_cc4_flexicharger_read(NULL, NULL, NULL))
-		*status = false;
-	else
-		*status = true;
+	if (!cc4_flexicharger_probe_done) {
+		cc4_flexicharger_available = !clevo_cc4_flexicharger_read(NULL, NULL, NULL);
+		cc4_flexicharger_probe_done = true;
+
+		if (!cc4_flexicharger_available)
+			pr_info("cc4 flexicharger not available, using legacy interface\n");
+	}
+
+	*status = cc4_flexicharger_available;
 
 	return 0;
 }
@@ -1046,6 +1073,9 @@ static int clevo_keyboard_suspend(struct platform_device *dev, pm_message_t stat
 
 static int clevo_keyboard_resume(struct platform_device *dev)
 {
+	/* firmware may answer differently after resume - allow one fresh probe */
+	clevo_flexicharger_probe_reset();
+
 	clevo_evaluate_method(CLEVO_CMD_SET_EVENTS_ENABLED, 0, NULL);
 	clevo_leds_restore_state_extern(); // Sometimes clevo devices forget their last state after
 					   // suspend, so let the kernel ensure it.
@@ -1076,6 +1106,9 @@ static struct tuxedo_keyboard_driver clevo_keyboard_driver = {
 int clevo_keyboard_add_interface(struct clevo_interface_t *new_interface)
 {
 	mutex_lock(&clevo_keyboard_interface_modification_lock);
+
+	/* interface (re)bound: probe flexicharger support again */
+	clevo_flexicharger_probe_reset();
 
 	if (strcmp(new_interface->string_id, CLEVO_INTERFACE_WMI_STRID) == 0) {
 		clevo_interfaces.wmi = new_interface;
